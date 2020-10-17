@@ -1,1 +1,1 @@
-# Playground
+# A repo for code snippets, small personal projects and learning new things.
