@@ -1,4 +1,4 @@
-package com.dcmsys.keycloak.extensions.events.logging.utils;
+package personal.iuliu.utils;
 
 import java.util.Map;
 import org.keycloak.events.admin.AdminEvent;
