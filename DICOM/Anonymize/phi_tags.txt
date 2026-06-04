@@ -1,0 +1,101 @@
+# ============================================================================
+# DICOM PHI (Protected Health Information) Tags
+# Based on DICOM PS3.15 Table E.1-1 — Safe Harbor De-identification Profile
+# 
+# Format: (gggg,eeee)  TAG_NAME  [Level]
+#   gggg = group number (hex), eeee = element number (hex)
+#   Lines starting with '#' are comments, blank lines are ignored.
+#
+# DICOM Information Model Hierarchy:
+#   Patient → Study → Series → SOP Instance
+#
+#   Patient identified by: Patient ID (0010,0020)
+#   Study   identified by: Study Instance UID (0020,000D)  ← NEVER change
+#   Series  identified by: Series Instance UID (0020,000E) ← NEVER change
+#   Instance identified by: SOP Instance UID (0008,0018)   ← NEVER change
+#
+# ============================================================================
+
+# ---- PATIENT-LEVEL PHI ----
+(0010,0010)  # Patient's Name              [Patient]
+(0010,0020)  # Patient ID                  [Patient]
+(0010,0030)  # Patient's Birth Date        [Patient]
+(0010,0032)  # Patient's Birth Time        [Patient]
+(0010,0040)  # Patient's Sex               [Patient]
+(0010,0050)  # Patient's Insurance Plan Code Sequence [Patient]
+(0010,1000)  # Other Patient IDs           [Patient]
+(0010,1001)  # Other Patient Names         [Patient]
+(0010,1002)  # Other Patient IDs Sequence  [Patient]
+(0010,1010)  # Patient's Age               [Patient]
+(0010,1020)  # Patient's Size              [Patient]
+(0010,1030)  # Patient's Weight            [Patient]
+(0010,1040)  # Patient's Address           [Patient]
+(0010,1050)  # Insurance Plan Identification [Patient]
+(0010,1060)  # Patient's Mother's Birth Name [Patient]
+(0010,1080)  # Military Rank               [Patient]
+(0010,1081)  # Branch of Service           [Patient]
+(0010,1090)  # Medical Record Locator      [Patient]
+(0010,2000)  # Medical Alerts              [Patient]
+(0010,2110)  # Allergies                   [Patient]
+(0010,2150)  # Country of Residence        [Patient]
+(0010,2152)  # Region of Residence         [Patient]
+(0010,2154)  # Patient's Telephone Numbers [Patient]
+(0010,2160)  # Ethnic Group                [Patient]
+(0010,2180)  # Occupation                  [Patient]
+(0010,21A0)  # Smoking Status              [Patient]
+(0010,21B0)  # Additional Patient History  [Patient]
+(0010,21C0)  # Pregnancy Status            [Patient]
+(0010,21D0)  # Last Menstrual Date         [Patient]
+(0010,21F0)  # Patient's Religious Preference [Patient]
+(0010,2203)  # Patient's Sex Neutered      [Patient]
+(0010,2297)  # Responsible Person          [Patient]
+(0010,2298)  # Responsible Person Role     [Patient]
+(0010,2299)  # Responsible Organization    [Patient]
+(0010,4000)  # Patient Comments            [Patient]
+
+# ---- STUDY-LEVEL PHI ----
+(0008,0020)  # Study Date                  [Study]
+(0008,0030)  # Study Time                  [Study]
+(0008,0050)  # Accession Number            [Study]
+(0008,0080)  # Institution Name            [Study]
+(0008,0081)  # Institution Address         [Study]
+(0008,0090)  # Referring Physician's Name  [Study]
+(0008,0092)  # Referring Physician's Address [Study]
+(0008,0094)  # Referring Physician's Telephone Numbers [Study]
+(0008,1010)  # Station Name                [Study]
+(0008,1030)  # Study Description           [Study]
+(0008,1040)  # Institutional Department Name [Study]
+(0008,1048)  # Physician(s) of Record      [Study]
+(0008,1049)  # Physician(s) of Record Identification Sequence [Study]
+(0008,1050)  # Performing Physician's Name [Study]
+(0008,1060)  # Name of Physician(s) Reading Study [Study]
+(0008,1070)  # Operators' Name             [Study/Series]
+(0008,1080)  # Admitting Diagnoses Description [Study]
+(0008,1110)  # Referenced Study Sequence   [Study]
+(0020,0010)  # Study ID                    [Study]
+(0020,4000)  # Image Comments              [Study/Instance]
+(0032,1032)  # Requesting Physician        [Study]
+(0032,1033)  # Requesting Service          [Study]
+(0032,1060)  # Requested Procedure Description [Study]
+(0040,0275)  # Request Attributes Sequence [Study]
+
+# ---- SERIES-LEVEL PHI ----
+(0008,0021)  # Series Date                 [Series]
+(0008,0031)  # Series Time                 [Series]
+(0008,103E)  # Series Description          [Series]
+(0018,1000)  # Device Serial Number        [Series]
+(0018,1020)  # Software Versions           [Series]
+(0040,0244)  # Performed Procedure Step Start Date [Series]
+(0040,0245)  # Performed Procedure Step Start Time [Series]
+(0040,0250)  # Performed Procedure Step End Date [Series]
+(0040,0251)  # Performed Procedure Step End Time [Series]
+
+# ---- INSTANCE-LEVEL PHI ----
+(0008,0022)  # Acquisition Date            [Instance]
+(0008,0023)  # Content Date                [Instance]
+(0008,0032)  # Acquisition Time            [Instance]
+(0008,0033)  # Content Time                [Instance]
+
+# ---- EQUIPMENT-LEVEL PHI ----
+(0008,0070)  # Manufacturer                [Equipment]
+(0008,1090)  # Manufacturer's Model Name   [Equipment]
