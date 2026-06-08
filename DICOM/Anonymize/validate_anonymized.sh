@@ -20,10 +20,30 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly DCMDUMP="dcmdump.exe"
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        readonly DCMDUMP="dcmdump.exe"
+        readonly IS_MSYS2=1
+        ;;
+    Linux*|Darwin*)
+        if command -v "dcmdump.exe" &>/dev/null; then
+            readonly DCMDUMP="dcmdump.exe"
+            readonly IS_MSYS2=1
+        else
+            readonly DCMDUMP="dcmdump"
+            readonly IS_MSYS2=0
+        fi
+        ;;
+    *)
+        readonly DCMDUMP="dcmdump"
+        readonly IS_MSYS2=0
+        ;;
+esac
 
 # Convert MSYS2 paths to Windows format for DCMTK native tools
 to_win_path() {
+    ((IS_MSYS2)) || { echo "$1"; return; }
     local p="$1"
     if [[ "$p" == /mnt/?/* ]]; then
         local drive="${p:5:1}"
@@ -60,10 +80,11 @@ readonly SERIES_CONSISTENCY_TAGS=(
     "0020,0011"  # Series Number
 )
 
-# Tags that should have ANON_NNNN values (not empty)
-readonly ANON_VALUE_TAGS=(
-    "0010,0010"  # Patient's Name
-    "0010,0020"  # Patient ID
+# Tags that should have generated values (not empty)
+readonly VALUE_TAGS=(
+    "0010,0010"  # Patient's Name     → ANON_NNNN
+    "0010,0020"  # Patient ID         → PID_NNNN
+    "0008,0050"  # Accession Number   → ACC_NNNN
 )
 
 # ---------------------------------------------------------------------------
@@ -106,13 +127,13 @@ check_prerequisites() {
     if command -v "$DCMDUMP" &>/dev/null; then
         return 0
     fi
-    for prefix in "/mnt/c/ProgramData/chocolatey/bin" "/usr/bin" "/usr/local/bin" "/opt/dcmtk/bin"; do
+    for prefix in "/usr/bin" "/usr/local/bin" "/opt/dcmtk/bin"; do
         if [[ -x "$prefix/$DCMDUMP" ]]; then
             export PATH="$prefix:$PATH"
             return 0
         fi
     done
-    log_fail "dcmdump.exe not found. Install DCMTK."
+    log_fail "$DCMDUMP not found. Install DCMTK."
     exit 2
 }
 
@@ -176,9 +197,8 @@ check_tags_anonymized() {
     for tag in "${_tags[@]}"; do
         local val
         val="$(get_tag_value "$file" "$tag")"
-
         local is_anon_tag=0
-        for at in "${ANON_VALUE_TAGS[@]}"; do
+        for at in "${VALUE_TAGS[@]}"; do
             [[ "${tag,,}" == "${at,,}" ]] && is_anon_tag=1 && break
         done
 

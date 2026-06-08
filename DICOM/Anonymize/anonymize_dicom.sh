@@ -26,11 +26,43 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly ANON_PREFIX="ANON_"
-readonly DCMODIFY="dcmodify.exe"
-readonly DCMDUMP="dcmdump.exe"
+readonly PID_PREFIX="PID_"
+readonly ACC_PREFIX="ACC_"
+
+# Platform detection:
+#   MINGW/MSYS/CYGWIN (Git Bash)  → dcmodify.exe, need path conversion
+#   WSL (Linux + .exe available)   → dcmodify.exe, no path conversion needed
+#   Native Linux/macOS             → dcmodify, no path conversion needed
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        readonly DCMODIFY="dcmodify.exe"
+        readonly DCMDUMP="dcmdump.exe"
+        readonly IS_MSYS2=1
+        ;;
+    Linux*|Darwin*)
+        if command -v "dcmodify.exe" &>/dev/null; then
+            # WSL: Windows .exe tools via /mnt/c/ — need path conversion like MSYS2
+            readonly DCMODIFY="dcmodify.exe"
+            readonly DCMDUMP="dcmdump.exe"
+            readonly IS_MSYS2=1
+        else
+            # Native Linux/macOS: bare tool names, no path conversion
+            readonly DCMODIFY="dcmodify"
+            readonly DCMDUMP="dcmdump"
+            readonly IS_MSYS2=0
+        fi
+        ;;
+    *)
+        readonly DCMODIFY="dcmodify"
+        readonly DCMDUMP="dcmdump"
+        readonly IS_MSYS2=0
+        ;;
+esac
 
 # Convert MSYS2 paths to Windows format for DCMTK native tools
 to_win_path() {
+    # Pass through unchanged on Linux/macOS — only convert paths under MSYS2
+    ((IS_MSYS2)) || { echo "$1"; return; }
     local p="$1"
     if [[ "$p" == /mnt/?/* ]]; then
         local drive="${p:5:1}"
@@ -53,10 +85,23 @@ readonly PROTECTED_UIDS=(
     "0020,0200"  # Synchronization Frame of Reference UID
 )
 
-# ---- Tags that receive sequential anonymous values instead of being emptied ----
+# ---- Tags that receive generated unique values per study ----
 readonly NAME_TAGS=(
     "0010,0010"  # Patient's Name
+)
+readonly PID_TAGS=(
     "0010,0020"  # Patient ID
+)
+readonly ACC_TAGS=(
+    "0008,0050"  # Accession Number
+)
+# ---- Sequence (SQ) tags — must use -e (empty) instead of -ma "(tag)=" ----
+readonly SEQ_TAGS=(
+    "0010,0050"  # Patient's Insurance Plan Code Sequence
+    "0010,1002"  # Other Patient IDs Sequence
+    "0008,1049"  # Physician(s) of Record Identification Sequence
+    "0008,1110"  # Referenced Study Sequence
+    "0040,0275"  # Request Attributes Sequence
 )
 
 # ---------------------------------------------------------------------------
@@ -102,7 +147,7 @@ check_prerequisites() {
             continue
         fi
         local found=0
-        for prefix in "/mnt/c/ProgramData/chocolatey/bin" "/usr/bin" "/usr/local/bin" "/opt/dcmtk/bin"; do
+        for prefix in "/usr/bin" "/usr/local/bin" "/opt/dcmtk/bin"; do
             if [[ -x "$prefix/$tool" ]]; then
                 export PATH="$prefix:$PATH"
                 found=1
@@ -157,10 +202,51 @@ is_name_tag() {
     return 1
 }
 
+is_pid_tag() {
+    local tag_lower="$1"
+    for pt in "${PID_TAGS[@]}"; do
+        [[ "$tag_lower" == "$pt" ]] && return 0
+    done
+    return 1
+}
+
+is_acc_tag() {
+    local tag_lower="$1"
+    for at in "${ACC_TAGS[@]}"; do
+        [[ "$tag_lower" == "$at" ]] && return 0
+    done
+    return 1
+}
+
+is_seq_tag() {
+    local tag_lower="$1"
+    for st in "${SEQ_TAGS[@]}"; do
+        [[ "$tag_lower" == "$st" ]] && return 0
+    done
+    return 1
+}
+
 is_dicom_file() {
     local file="$1"
     [[ -f "$file" ]] || return 1
     "$DCMDUMP" -q "$(to_win_path "$file")" &>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# SOP Instance UID extraction — used in error messages
+# ---------------------------------------------------------------------------
+
+get_sop_instance_uid() {
+    local file="$1"
+    local raw
+    raw="$("$DCMDUMP" -q +P "0008,0018" "$(to_win_path "$file")" 2>/dev/null)" || true
+    # Extract value between brackets:  [VALUE]  or "(no value available)"
+    if [[ "$raw" == *"["*"]"* ]]; then
+        local val="${raw#*[}"
+        echo "${val%%]*}"
+    else
+        echo ""
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -191,30 +277,41 @@ find_study_dirs() {
 # Anonymization core
 # ---------------------------------------------------------------------------
 
-build_modify_arg() {
-    local tag="$1"
-    local anon_name="$2"
-    if is_name_tag "$tag"; then
-        printf '%s\n' "-ma" "($tag)=$anon_name"
-    else
-        printf '%s\n' "-ma" "($tag)="
-    fi
-}
-
 anonymize_file() {
     local file="$1"
-    local anon_name="$2"
-    local -n _tags="$3"
+    local anon_name="$2"    # PatientName value (e.g. ANON_0001)
+    local anon_pid="$3"     # PatientID value  (e.g. PID_0001)
+    local anon_acc="$4"     # AccessionNumber value (e.g. ACC_0001)
+    local -n _tags="$5"
+    local orig_file="${6:-}"
 
-    if [[ ! -f "$file" ]]; then
-        log_warn "Skipping: file not found: $file"
-        return 1
-    fi
-    if ! is_dicom_file "$file"; then
-        log_warn "Skipping: not a valid DICOM file: $file"
-        return 1
-    fi
+    [[ -f "$file" ]] || { log_warn "Skipping: file not found: $file"; return 1; }
+    is_dicom_file "$file" || { log_warn "Skipping: not a valid DICOM file: $file"; return 1; }
 
+    local sop_uid
+    sop_uid="$(get_sop_instance_uid "$file")"
+    local wnpath
+    wnpath="$(to_win_path "$file")"
+    local bname
+    bname="$(basename "$file")"
+
+    # ---- Resolve value for each tag ----
+    _get_tag_value() {
+        local tag="$1"
+        if is_name_tag "$tag"; then
+            echo "$anon_name"
+        elif is_pid_tag "$tag"; then
+            echo "$anon_pid"
+        elif is_acc_tag "$tag"; then
+            echo "$anon_acc"
+        elif is_seq_tag "$tag"; then
+            echo ""   # sequences use -e flag, not value
+        else
+            echo ""   # emptied tags
+        fi
+    }
+
+    # ---- Build the full batch of modifications ----
     local dcmodify_args=("-nb" "-ie" "-imt")
     local skipped_uids=()
     for tag in "${_tags[@]}"; do
@@ -222,20 +319,73 @@ anonymize_file() {
             skipped_uids+=("$tag")
             continue
         fi
-        local flag val
-        { IFS= read -r flag; IFS= read -r val; } < <(build_modify_arg "$tag" "$anon_name")
-        dcmodify_args+=("$flag" "$val")
+        if is_seq_tag "$tag"; then
+            dcmodify_args+=("-e" "($tag)")
+        else
+            local val
+            val="$(_get_tag_value "$tag")"
+            dcmodify_args+=("-ma" "($tag)=$val")
+        fi
     done
 
     if ((${#skipped_uids[@]} > 0)); then
         log_info "  Skipped protected UID tags: ${skipped_uids[*]}"
     fi
 
-    if ! "$DCMODIFY" "${dcmodify_args[@]}" "$(to_win_path "$file")" 2>&1; then
-        log_error "dcmodify failed for: $file"
-        return 1
+    # ---- Fast path: single dcmodify call with all tags ----
+    local batch_err
+    batch_err="$("$DCMODIFY" "${dcmodify_args[@]}" "$wnpath" 2>&1)" && return 0
+
+    # ---- Slow path: batch failed, retry tag by tag ----
+    log_warn "  $bname: batch modification failed — retrying tag by tag"
+    log_info "  Batch error was:"
+    local batch_line
+    while IFS= read -r batch_line; do
+        log_info "    $batch_line"
+    done <<< "$batch_err"
+
+    if [[ -n "$orig_file" ]] && [[ -f "$orig_file" ]]; then
+        cp "$orig_file" "$file"
     fi
-    return 0
+
+    local failures=0
+    local -a failed_tags=()
+
+    for tag in "${_tags[@]}"; do
+        if is_tag_protected "$tag"; then
+            continue
+        fi
+
+        local flag modify_arg
+        if is_seq_tag "$tag"; then
+            flag="-e"
+            modify_arg="($tag)"
+        else
+            flag="-ma"
+            local val
+            val="$(_get_tag_value "$tag")"
+            modify_arg="($tag)=$val"
+        fi
+
+        local dcmtk_err
+        dcmtk_err="$("$DCMODIFY" -nb -ie -imt "$flag" "$modify_arg" "$wnpath" 2>&1)" || {
+            log_error "Anonymization failed"
+            log_error "  File:           $bname"
+            log_error "  SOPInstanceUID: ${sop_uid:-unknown}"
+            log_error "  Tag:            ($tag)"
+            local err_line
+            err_line="$(echo "$dcmtk_err" | grep -E '^[EW]:' | head -1)"
+            [[ -z "$err_line" ]] && err_line="$(echo "$dcmtk_err" | head -1)"
+            log_error "  DCMTK error:    ${err_line:-$dcmtk_err}"
+            ((failures++)) || true
+            failed_tags+=("$tag")
+        }
+    done
+
+    if ((failures > 0)); then
+        log_warn "  $bname: ${#failed_tags[@]} tag(s) could not be anonymized: ${failed_tags[*]}"
+    fi
+    return "$failures"
 }
 
 anonymize_study() {
@@ -246,8 +396,12 @@ anonymize_study() {
     local -n tags_ref="$5"
 
     local anon_name
+    local anon_pid
+    local anon_acc
     anon_name="$(printf "%s%04d" "$ANON_PREFIX" "$anon_index")"
-    log_info "Study #$anon_index: $study_dir  →  $anon_name"
+    anon_pid="$(printf "%s%04d" "$PID_PREFIX" "$anon_index")"
+    anon_acc="$(printf "%s%04d" "$ACC_PREFIX" "$anon_index")"
+    log_info "Study #$anon_index: $study_dir  →  $anon_name (PID=$anon_pid, ACC=$anon_acc)"
 
     local dcm_files=()
     local f
@@ -273,7 +427,7 @@ anonymize_study() {
     for f in "${dcm_files[@]}"; do
         local dest="$output_dir/$(basename "$f")"
         cp "$f" "$dest"
-        if anonymize_file "$dest" "$anon_name" tags_ref; then
+        if anonymize_file "$dest" "$anon_name" "$anon_pid" "$anon_acc" tags_ref "$f"; then
             log_info "  ✓ $(basename "$f")"
         else
             log_warn "  ✗ $(basename "$f") (failed, original copied)"
@@ -381,4 +535,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ -z "${ANON_SOURCED:-}" ]]; then
+    main "$@"
+fi

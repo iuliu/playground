@@ -25,11 +25,33 @@ readonly ANON_SCRIPT="$SCRIPT_DIR/anonymize_dicom.sh"
 readonly VALIDATE_SCRIPT="$SCRIPT_DIR/validate_anonymized.sh"
 readonly TAGS_FILE="$SCRIPT_DIR/phi_tags.txt"
 
-readonly DCMDUMP="dcmdump.exe"
-readonly DUMP2DCM="dump2dcm.exe"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        readonly DCMDUMP="dcmdump.exe"
+        readonly DUMP2DCM="dump2dcm.exe"
+        readonly IS_MSYS2=1
+        ;;
+    Linux*|Darwin*)
+        if command -v "dcmdump.exe" &>/dev/null; then
+            readonly DCMDUMP="dcmdump.exe"
+            readonly DUMP2DCM="dump2dcm.exe"
+            readonly IS_MSYS2=1
+        else
+            readonly DCMDUMP="dcmdump"
+            readonly DUMP2DCM="dump2dcm"
+            readonly IS_MSYS2=0
+        fi
+        ;;
+    *)
+        readonly DCMDUMP="dcmdump"
+        readonly DUMP2DCM="dump2dcm"
+        readonly IS_MSYS2=0
+        ;;
+esac
 
 # Convert MSYS2 paths to Windows format for DCMTK native tools
 to_win_path() {
+    ((IS_MSYS2)) || { echo "$1"; return; }
     local p="$1"
     if [[ "$p" == /mnt/?/* ]]; then
         local drive="${p:5:1}"
@@ -282,22 +304,24 @@ verify_anonymized() {
 
     # Check 1: Sequential naming
     log_info "Check 1: Sequential naming (ANON_0001, ANON_0002)"
-    local name1 name2 id1 id2
+    local name1 name2 id1 id2 acc1 acc2
     name1="$("$DCMDUMP" -q +P "0010,0010" "$(to_win_path "$OUTPUT_DIR/study_001/image_001.dcm")" 2>/dev/null)"
     id1="$("$DCMDUMP" -q +P "0010,0020" "$(to_win_path "$OUTPUT_DIR/study_001/image_001.dcm")" 2>/dev/null)"
+    acc1="$("$DCMDUMP" -q +P "0008,0050" "$(to_win_path "$OUTPUT_DIR/study_001/image_001.dcm")" 2>/dev/null)"
     name2="$("$DCMDUMP" -q +P "0010,0010" "$(to_win_path "$OUTPUT_DIR/study_002/scan_001.dcm")" 2>/dev/null)"
     id2="$("$DCMDUMP" -q +P "0010,0020" "$(to_win_path "$OUTPUT_DIR/study_002/scan_001.dcm")" 2>/dev/null)"
+    acc2="$("$DCMDUMP" -q +P "0008,0050" "$(to_win_path "$OUTPUT_DIR/study_002/scan_001.dcm")" 2>/dev/null)"
 
     [[ "$name1" == *"[ANON_0001]"* ]] && log_pass "Study 1 PatientName = ANON_0001 ✓" || { log_fail "Study 1 PatientName: got $name1"; ((failures++)) || true; }
-    [[ "$id1"   == *"[ANON_0001]"* ]] && log_pass "Study 1 PatientID = ANON_0001 ✓"   || { log_fail "Study 1 PatientID: got $id1"; ((failures++)) || true; }
+    [[ "$id1"   == *"[PID_0001]"*  ]] && log_pass "Study 1 PatientID = PID_0001 ✓"   || { log_fail "Study 1 PatientID: got $id1"; ((failures++)) || true; }
+    [[ "$acc1"  == *"[ACC_0001]"*  ]] && log_pass "Study 1 AccessionNumber = ACC_0001 ✓" || { log_fail "Study 1 AccessionNumber: got $acc1"; ((failures++)) || true; }
     [[ "$name2" == *"[ANON_0002]"* ]] && log_pass "Study 2 PatientName = ANON_0002 ✓" || { log_fail "Study 2 PatientName: got $name2"; ((failures++)) || true; }
-    [[ "$id2"   == *"[ANON_0002]"* ]] && log_pass "Study 2 PatientID = ANON_0002 ✓"   || { log_fail "Study 2 PatientID: got $id2"; ((failures++)) || true; }
+    [[ "$id2"   == *"[PID_0002]"*  ]] && log_pass "Study 2 PatientID = PID_0002 ✓"   || { log_fail "Study 2 PatientID: got $id2"; ((failures++)) || true; }
+    [[ "$acc2"  == *"[ACC_0002]"*  ]] && log_pass "Study 2 AccessionNumber = ACC_0002 ✓" || { log_fail "Study 2 AccessionNumber: got $acc2"; ((failures++)) || true; }
 
     # Check 2: PHI removal
     log_info "Check 2: PHI tags emptied"
     local val
-    val="$("$DCMDUMP" -q +P "0008,0050" "$(to_win_path "$OUTPUT_DIR/study_001/image_001.dcm")" 2>/dev/null)"
-    [[ "$val" == *"(no value available)"* || -z "$val" ]] && log_pass "AccessionNumber emptied ✓" || { log_fail "AccessionNumber not emptied: $val"; ((failures++)) || true; }
 
     val="$("$DCMDUMP" -q +P "0008,1030" "$(to_win_path "$OUTPUT_DIR/study_001/image_001.dcm")" 2>/dev/null)"
     [[ "$val" == *"(no value available)"* || -z "$val" ]] && log_pass "StudyDescription emptied ✓" || { log_fail "StudyDescription not emptied: $val"; ((failures++)) || true; }
@@ -343,10 +367,6 @@ verify_anonymized() {
     sd2="$("$DCMDUMP" -q +P "0008,103e" "$(to_win_path "$OUTPUT_DIR/study_001/image_002.dcm")" 2>/dev/null)"
     [[ "$sd1" == "$sd2" ]] && log_pass "SeriesDescription consistent within Series A ✓" || { log_fail "SeriesDescription inconsistent: [$sd1] [$sd2]"; ((failures++)) || true; }
 
-    # Check 6: Name == ID
-    log_info "Check 6: PatientName == PatientID in each study"
-    [[ "$(extract_dcm_val "$name1")" == "$(extract_dcm_val "$id1")" ]] && log_pass "Study 1: PatientName matches PatientID ✓" || { log_fail "Study 1 mismatch"; ((failures++)) || true; }
-    [[ "$(extract_dcm_val "$name2")" == "$(extract_dcm_val "$id2")" ]] && log_pass "Study 2: PatientName matches PatientID ✓" || { log_fail "Study 2 mismatch"; ((failures++)) || true; }
 
     return "$failures"
 }
@@ -422,6 +442,118 @@ test_non_dicom_ignored() {
 }
 
 # ---------------------------------------------------------------------------
+# Test: detailed error messages on dcmodify failure
+# ---------------------------------------------------------------------------
+
+test_detailed_error_messages() {
+    log_section "Test: detailed error messages on dcmodify failure"
+    local td="$TEST_DIR/error_detail"
+    rm -rf "$td"
+    mkdir -p "$td"
+
+    # Create a valid DICOM file with known SOPInstanceUID
+    export PATIENT_NAME="ERROR^TEST" PATIENT_ID="PAT-ERR" INSTANCE_NUMBER="1"
+    if ! generate_dicom \
+        --output "$td/test_001.dcm" \
+        --sop-uid "1.2.840.999.ERROR.1" \
+        --study-uid "1.2.840.999.ERROR" \
+        --series-uid "1.2.840.999.ERROR.1"; then
+        log_fail "Failed to create test DICOM file"
+        rm -rf "$td"
+        return 1
+    fi
+
+    if [[ ! -f "$td/test_001.dcm" ]]; then
+        log_fail "Test DICOM file not created"
+        rm -rf "$td"
+        return 1
+    fi
+
+    # Create a custom tags file
+    local tags_file="$td/custom_tags.txt"
+    printf '(0010,0010)\n(0010,0020)\n(0008,0090)\n' > "$tags_file"
+
+    # Make the file read-only so dcmodify fails when trying to write back.
+    # Use attrib.exe (Windows native) because chmod -w is unreliable on WSL /mnt/ mounts.
+    attrib.exe +R "$(to_win_path "$td/test_001.dcm")" 2>/dev/null || chmod -w "$td/test_001.dcm"
+
+    # Source the anonymize script (with main overridden) and call anonymize_file.
+    # Pass paths via environment so a quoted heredoc keeps $tag literal for inner bash.
+    export TD_PATH="$td"
+    export TAGS_PATH="$tags_file"
+    export ANON_PATH="$ANON_SCRIPT"
+    local captured
+    captured=$(bash 2>&1 <<'INNER'
+export ANON_SOURCED=1
+source "$ANON_PATH"
+_run_test() {
+local tags=()
+local tag
+while IFS= read -r tag; do tags+=("$tag"); done < <(parse_tags_file "$TAGS_PATH")
+anonymize_file "$TD_PATH/test_001.dcm" "ANON_ERROR_TEST" "PID_ERROR_TEST" "ACC_ERROR_TEST" tags
+}
+_run_test
+INNER
+)
+
+    local failures=0
+
+    # Check SOPInstanceUID appears in output
+    if echo "$captured" | grep -qF '1.2.840.999.ERROR.1'; then
+        log_pass "Error contains SOPInstanceUID ✓"
+    else
+        log_fail "Error missing SOPInstanceUID"
+        log_detail "Expected: 1.2.840.999.ERROR.1"
+        log_detail "Output:"
+        echo "$captured"
+        ((failures++)) || true
+    fi
+
+    # Check file name appears in output
+    if echo "$captured" | grep -qF 'test_001.dcm'; then
+        log_pass "Error contains file name ✓"
+    else
+        log_fail "Error missing file name"
+        log_detail "Output:"
+        echo "$captured"
+        ((failures++)) || true
+    fi
+
+    # Check DICOM tag appears in output (the tag that failed)
+    if echo "$captured" | grep -qE '\(0010,0010\)|\(0010,0020\)|\(0008,0090\)'; then
+        log_pass "Error contains DICOM tag ✓"
+    else
+        log_fail "Error missing DICOM tag reference"
+        log_detail "Output:"
+        echo "$captured"
+        ((failures++)) || true
+    fi
+
+    # Check DCMTK error message appears
+    if echo "$captured" | grep -qiE '(error|unable|cannot|denied|fail)'; then
+        log_pass "Error contains DCMTK error message ✓"
+    else
+        log_fail "Error missing DCMTK error message"
+        log_detail "Output:"
+        echo "$captured"
+        ((failures++)) || true
+    fi
+
+    # Check the overall file summary warning (N tag(s) could not be anonymized)
+    if echo "$captured" | grep -qE 'tag\(s\) could not be anonymized'; then
+        log_pass "Error contains tag failure summary ✓"
+    else
+        log_fail "Error missing tag failure summary"
+        log_detail "Output:"
+        echo "$captured"
+        ((failures++)) || true
+    fi
+
+    rm -rf "$td"
+    return "$failures"
+}
+
+# ---------------------------------------------------------------------------
 # Main test runner
 # ---------------------------------------------------------------------------
 
@@ -436,6 +568,7 @@ main() {
     run_validation_script || ((total_failures++)) || true
     test_empty_dir_skipped || ((total_failures++)) || true
     test_non_dicom_ignored || ((total_failures++)) || true
+    test_detailed_error_messages || ((total_failures++)) || true
 
     log_section "Test Results"
     if ((total_failures == 0)); then
